@@ -249,6 +249,11 @@ def parse_args() -> argparse.Namespace:
         default="text",
         help="Output format for --list (default: text).",
     )
+    parser.add_argument(
+        "--with-abstract",
+        action="store_true",
+        help="Include abstract and TLDR in --list text output.",
+    )
     parser.set_defaults(skip_existing=True)
 
     args = parser.parse_args()
@@ -395,20 +400,26 @@ def filter_selected(
 
 
 def paper_record(
-    note, category: str, path: Path, match_info: Optional[Dict[str, object]]
+    note, category: str, path: Path, match_info: Optional[Dict[str, object]],
+    with_abstract: bool = False,
 ) -> Dict[str, object]:
-    return {
+    record = {
         "number": getattr(note, "number", None),
         "id": getattr(note, "id", ""),
         "decision": category,
         "title": content_value(note, "title"),
         "authors": content_value(note, "authors"),
+        "keywords": content_value(note, "keywords"),
         "venue": content_value(note, "venue"),
         "venueid": content_value(note, "venueid"),
         "pdf_path": str(path),
         "match_count": match_info["hit_count"] if match_info else 0,
         "matches": match_info["details"] if match_info else [],
     }
+    if with_abstract:
+        record["abstract"] = content_value(note, "abstract")
+        record["tldr"] = content_value(note, "TLDR")
+    return record
 
 
 def format_paper_line(note, category: str) -> str:
@@ -433,7 +444,7 @@ def print_selected(
         }
         print(json.dumps(summary, sort_keys=True))
         for note, category, path, match_info in selected:
-            record = paper_record(note, category, path, match_info)
+            record = paper_record(note, category, path, match_info, args.with_abstract)
             record["type"] = "paper"
             print(json.dumps(record, sort_keys=True))
         return
@@ -454,8 +465,18 @@ def print_selected(
         authors = content_value(note, "authors")
         if authors:
             print(f"  authors: {authors}")
+        keywords = content_value(note, "keywords")
+        if keywords:
+            print(f"  keywords: {keywords}")
         print(f"  id: {getattr(note, 'id', '')}")
         print(f"  pdf: {path}")
+        if args.with_abstract:
+            abstract = content_value(note, "abstract")
+            if abstract:
+                print(f"  abstract: {abstract}")
+            tldr = content_value(note, "TLDR")
+            if tldr:
+                print(f"  tldr: {tldr}")
         if match_info:
             for detail in match_info["details"]:
                 label = detail.get("query") or detail.get("pattern")
