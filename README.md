@@ -13,6 +13,17 @@ Despite the name, this works for **any** OpenReview-hosted conference (NeurIPS, 
 pip install openreview_downloader
 ```
 
+## Authentication
+
+Some conferences on OpenReview require you to be logged in, even to read accepted papers. If you see a **403 Forbidden** error, set your OpenReview credentials before running the tool:
+
+```bash
+export OPENREVIEW_USERNAME='your@email.com'
+export OPENREVIEW_PASSWORD='yourpassword'
+```
+
+If you don't have an account, register for free at [openreview.net](https://openreview.net).
+
 ## Usage
 
 The CLI saves PDFs into `downloads/<venue>/<decision>/` with sanitized filenames.

@@ -485,14 +485,36 @@ def split_existing(
 def fetch_notes(
     client, venue_id: str, need_rejected: bool
 ) -> Tuple[List, List]:
-    accepted = client.get_all_notes(content={"venueid": venue_id})
+    try:
+        accepted = client.get_all_notes(content={"venueid": venue_id})
+    except Exception as exc:
+        _handle_fetch_error(exc, venue_id)
+        raise
     rejected: List = []
     if need_rejected:
         for suffix in REJECTED_SUFFIXES:
-            rejected.extend(
-                client.get_all_notes(content={"venueid": f"{venue_id}/{suffix}"})
-            )
+            try:
+                rejected.extend(
+                    client.get_all_notes(content={"venueid": f"{venue_id}/{suffix}"})
+                )
+            except Exception as exc:
+                _handle_fetch_error(exc, f"{venue_id}/{suffix}")
+                raise
     return accepted, rejected
+
+
+def _handle_fetch_error(exc: Exception, venue_id: str) -> None:
+    msg = str(exc)
+    if "403" in msg or "Forbidden" in msg:
+        print(
+            f"\nError: 403 Forbidden fetching notes for '{venue_id}'.\n"
+            "This venue requires authentication. Set your OpenReview credentials:\n"
+            "  export OPENREVIEW_USERNAME='your@email.com'\n"
+            "  export OPENREVIEW_PASSWORD='yourpassword'\n"
+            "Then re-run the command.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
 
 def decision_counts(
