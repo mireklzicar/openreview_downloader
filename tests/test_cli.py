@@ -17,8 +17,10 @@ from openreview_downloader.cli import (
     filter_selected,
     load_saved_credentials,
     parse_decisions,
+    paper_path,
     print_selected,
     resolve_credentials,
+    sanitize_title,
     save_credentials,
     split_existing,
 )
@@ -124,6 +126,26 @@ class CliSelectionTests(unittest.TestCase):
         self.assertEqual(summary["type"], "summary")
         self.assertEqual(summary["matched_papers"], 10)
         self.assertEqual(summary["shown_papers"], 1)
+
+    def test_sanitize_title_defaults_to_five_words(self):
+        title = "Foundations of Equivariant Deep Learning Unifying Graph and Sheaf Neural Networks"
+        self.assertEqual(
+            sanitize_title(title), "Foundations_of_Equivariant_Deep_Learning"
+        )
+
+    def test_sanitize_title_respects_custom_max_words(self):
+        title = "Foundations of Equivariant Deep Learning Unifying Graph"
+        self.assertEqual(sanitize_title(title, max_words=2), "Foundations_of")
+
+    def test_paper_path_truncates_title_to_max_filename_words(self):
+        note = self.note(
+            content={
+                **self.note().content,
+                "title": {"value": "One Two Three Four Five Six Seven"},
+            }
+        )
+        path = paper_path(note, "accepted", Path("/tmp/out"), max_filename_words=3)
+        self.assertEqual(path.name, "00001_One_Two_Three.pdf")
 
 
 class CliAuthTests(unittest.TestCase):

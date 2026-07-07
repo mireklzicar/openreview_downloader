@@ -216,9 +216,10 @@ def conference_dir(venue_id: str) -> Path:
     return Path("downloads") / slug
 
 
-def sanitize_title(title: str) -> str:
+def sanitize_title(title: str, max_words: int = 5) -> str:
     cleaned = "".join(c for c in title if c.isalnum() or c in " _-")
-    cleaned = "_".join(cleaned.split())
+    words = cleaned.split()[:max_words]
+    cleaned = "_".join(words)
     return cleaned[:120] or "paper"
 
 
@@ -273,12 +274,12 @@ def note_decision(note, venue_id: str) -> Optional[str]:
     return label
 
 
-def paper_path(note, category: str, base_dir: Path) -> Path:
+def paper_path(note, category: str, base_dir: Path, max_filename_words: int = 5) -> Path:
     title = content_value(note, "title")
     fname_parts = []
     if getattr(note, "number", None) is not None:
         fname_parts.append(f"{note.number:05d}")
-    safe_title = sanitize_title(title)
+    safe_title = sanitize_title(title, max_filename_words)
     fname_parts.append(safe_title)
     fname = "_".join([p for p in fname_parts if p]) + ".pdf"
     return base_dir / category / fname
@@ -312,6 +313,16 @@ def parse_nonnegative_int(raw: str) -> int:
         raise argparse.ArgumentTypeError("must be an integer") from exc
     if value < 0:
         raise argparse.ArgumentTypeError("must be 0 or greater")
+    return value
+
+
+def parse_positive_int(raw: str) -> int:
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be an integer") from exc
+    if value < 1:
+        raise argparse.ArgumentTypeError("must be 1 or greater")
     return value
 
 
@@ -416,6 +427,16 @@ def parse_args() -> argparse.Namespace:
         "--with-abstract",
         action="store_true",
         help="Include abstract and TLDR in --list text output.",
+    )
+    parser.add_argument(
+        "--max-filename-words",
+        type=parse_positive_int,
+        default=5,
+        metavar="N",
+        help=(
+            "Maximum number of title words to keep in downloaded PDF filenames; "
+            "extra words are dropped (default: 5)."
+        ),
     )
     parser.set_defaults(skip_existing=True)
 
@@ -724,6 +745,7 @@ def collect_selected(
     venue_id: str,
     decisions: List[str],
     base_dir: Path,
+    max_filename_words: int = 5,
 ) -> List[Tuple[object, str, Path]]:
     requested = set(decisions)
     selected = []
@@ -734,7 +756,7 @@ def collect_selected(
         target = target_category(label, requested)
         if not target or note.id in seen_ids:
             continue
-        path = paper_path(note, target, base_dir)
+        path = paper_path(note, target, base_dir, max_filename_words)
         selected.append((note, target, path))
         seen_ids.add(note.id)
 
@@ -742,7 +764,7 @@ def collect_selected(
         target = target_category("rejected", requested)
         if not target or note.id in seen_ids:
             continue
-        path = paper_path(note, target, base_dir)
+        path = paper_path(note, target, base_dir, max_filename_words)
         selected.append((note, target, path))
         seen_ids.add(note.id)
 
@@ -915,6 +937,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         venue_id=args.venue_id,
         decisions=args.decisions,
         base_dir=base_dir,
+        max_filename_words=args.max_filename_words,
     )
     matched = filter_selected(selected, args)
     total_matches = len(matched)

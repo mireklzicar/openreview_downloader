@@ -59,9 +59,9 @@ Download Output:
 downloads
 └── icml2026
     └── spotlight
-        ├── 34584_Foundations_of_Equivariant_Deep_Learning_Unifying_Graph_and_Sheaf_Neural_Networks.pdf
+        ├── 34584_Foundations_of_Equivariant_Deep_Learning.pdf
         ...
-        └── 34218_Information-Theoretic_Disentangled_Latent_Modeling_with_Conditional_Diffusion_for_Incomplete_Multi-View_Clustering.pdf
+        └── 34218_Information-Theoretic_Disentangled_Latent_Modeling_with.pdf
 ```
 
 See decision counts without downloading:
@@ -294,6 +294,8 @@ You can use any other OpenReview venue ID in the same way.
 - **`--regex PATTERN`** – Regex search across paper metadata; repeat to require multiple patterns
 - **`--case-sensitive`** – Make search and regex matching case-sensitive
 - **`--format text|jsonl`** – Output format for `--list`; `jsonl` is convenient for automation
+- **`--with-abstract`** – Include abstract and TLDR in `--list` output
+- **`--max-filename-words N`** – Maximum number of title words to keep in downloaded PDF filenames; extra words are dropped (default: `5`)
 - **`ordl auth`** – Save OpenReview credentials for future runs
 - **`ordl auth status`** – Show whether credentials come from the environment, saved auth, or neither
 - **`ordl auth logout`** – Remove saved OpenReview credentials
