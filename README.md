@@ -24,6 +24,72 @@ The CLI saves PDFs into `downloads/<venue>/<decision>/` with sanitized filenames
 - `rejected` – Rejected papers
 - `all` – Accepted and rejected papers
 
+### Authentication
+
+Some OpenReview venues require authenticated API access. If `OPENREVIEW_USERNAME` and `OPENREVIEW_PASSWORD` are present in the environment, the CLI uses them automatically and does not prompt.
+
+To save credentials for future runs:
+
+```bash
+ordl auth
+```
+
+You can also check or clear saved credentials:
+
+```bash
+ordl auth status
+ordl auth logout
+```
+
+When no environment or saved credentials are available, `ordl` asks for your OpenReview email and password interactively before contacting OpenReview.
+
+### Latest ICML example (2026)
+
+OpenReview may require authenticated API access for ICML 2026. Run `ordl auth` once, or set `OPENREVIEW_USERNAME` and `OPENREVIEW_PASSWORD` in your environment.
+
+Download all ICML 2026 spotlight papers:
+
+```bash
+ordl spotlight --venue-id ICML.cc/2026/Conference
+```
+
+Download Output:
+
+```
+downloads
+└── icml2026
+    └── spotlight
+        ├── 34584_Foundations_of_Equivariant_Deep_Learning_Unifying_Graph_and_Sheaf_Neural_Networks.pdf
+        ...
+        └── 34218_Information-Theoretic_Disentangled_Latent_Modeling_with_Conditional_Diffusion_for_Incomplete_Multi-View_Clustering.pdf
+```
+
+See decision counts without downloading:
+
+```bash
+ordl --info --venue-id ICML.cc/2026/Conference
+```
+
+Example output:
+
+```
+Fetching accepted submissions for ICML.cc/2026/Conference...
+Accepted submissions: 6341
+Rejected submissions: 214
+ICML 2026
+---
+Oral: 0
+Spotlight: 536
+Accepted: 6341
+Rejected: 214
+```
+
+Preview accepted ICML 2026 papers:
+
+```bash
+ordl accepted --list --head 3 --venue-id ICML.cc/2026/Conference
+```
+
 ### Basic examples (NeurIPS)
 
 Download all NeurIPS oral papers:
@@ -228,6 +294,9 @@ You can use any other OpenReview venue ID in the same way.
 - **`--regex PATTERN`** – Regex search across paper metadata; repeat to require multiple patterns
 - **`--case-sensitive`** – Make search and regex matching case-sensitive
 - **`--format text|jsonl`** – Output format for `--list`; `jsonl` is convenient for automation
+- **`ordl auth`** – Save OpenReview credentials for future runs
+- **`ordl auth status`** – Show whether credentials come from the environment, saved auth, or neither
+- **`ordl auth logout`** – Remove saved OpenReview credentials
 
 ## Development
 

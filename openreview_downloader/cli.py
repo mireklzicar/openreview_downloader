@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import argparse
+import getpass
 import json
 import os
 import re
@@ -26,14 +27,176 @@ SEARCHABLE_FIELDS = (
     "venue",
     "venueid",
 )
+AUTH_SERVICE = "openreview_downloader"
+AUTH_CONFIG_ENV = "ORDL_AUTH_FILE"
+AUTH_CONFIG_FILENAME = "auth.json"
 
 
-def build_client():
-    """Return an OpenReview client, optionally authenticated via env vars."""
+def auth_config_path() -> Path:
+    """Return the path used to remember the OpenReview username."""
+    override = os.environ.get(AUTH_CONFIG_ENV)
+    if override:
+        return Path(override).expanduser()
+    base_dir = Path(
+        os.environ.get(
+            "XDG_CONFIG_HOME",
+            Path.home() / ".config",
+        )
+    )
+    return base_dir / "openreview_downloader" / AUTH_CONFIG_FILENAME
+
+
+def load_auth_config() -> Dict[str, str]:
+    path = auth_config_path()
+    try:
+        return json.loads(path.read_text())
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {}
+
+
+def write_auth_config(config: Dict[str, str]) -> None:
+    path = auth_config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(config, indent=2, sort_keys=True) + "\n")
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
+
+
+def delete_auth_config() -> None:
+    try:
+        auth_config_path().unlink()
+    except FileNotFoundError:
+        pass
+
+
+def load_keyring():
+    try:
+        import keyring
+    except Exception:  # noqa: BLE001
+        return None
+    return keyring
+
+
+def save_credentials(username: str, password: str) -> str:
+    """Save credentials and return the storage backend name."""
+    keyring = load_keyring()
+    if keyring is not None:
+        try:
+            keyring.set_password(AUTH_SERVICE, username, password)
+            write_auth_config(
+                {"username": username, "password_storage": "keyring"}
+            )
+            return "keyring"
+        except Exception:  # noqa: BLE001
+            pass
+
+    write_auth_config(
+        {
+            "username": username,
+            "password": password,
+            "password_storage": "file",
+        }
+    )
+    return "file"
+
+
+def load_saved_credentials() -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    config = load_auth_config()
+    username = config.get("username")
+    if not username:
+        return None, None, None
+
+    storage = config.get("password_storage", "file")
+    if storage == "keyring":
+        keyring = load_keyring()
+        if keyring is None:
+            return username, None, storage
+        try:
+            password = keyring.get_password(AUTH_SERVICE, username)
+        except Exception:  # noqa: BLE001
+            password = None
+        return username, password, storage
+
+    return username, config.get("password"), storage
+
+
+def clear_saved_credentials() -> bool:
+    username, _password, storage = load_saved_credentials()
+    removed = bool(username)
+    if username and storage == "keyring":
+        keyring = load_keyring()
+        if keyring is not None:
+            try:
+                keyring.delete_password(AUTH_SERVICE, username)
+            except Exception:  # noqa: BLE001
+                pass
+    delete_auth_config()
+    return removed
+
+
+def prompt_input(label: str) -> str:
+    print(label, end="", file=sys.stderr, flush=True)
+    return sys.stdin.readline().strip()
+
+
+def prompt_credentials() -> Tuple[Optional[str], Optional[str]]:
+    if not sys.stdin.isatty():
+        return None, None
+    username = prompt_input("OpenReview email: ")
+    password = getpass.getpass("OpenReview password: ", stream=sys.stderr)
+    if not username or not password:
+        return None, None
+    return username, password
+
+
+def resolve_credentials(
+    *, allow_prompt: bool = True
+) -> Tuple[Optional[str], Optional[str], str]:
+    """Resolve OpenReview credentials in env, saved auth, then prompt order."""
+    env_username = os.environ.get("OPENREVIEW_USERNAME")
+    env_password = os.environ.get("OPENREVIEW_PASSWORD")
+    if env_username and env_password:
+        return env_username, env_password, "environment"
+
+    if env_username or env_password:
+        print(
+            "Ignoring incomplete OpenReview environment credentials; set both "
+            "OPENREVIEW_USERNAME and OPENREVIEW_PASSWORD.",
+            file=sys.stderr,
+        )
+
+    username, password, storage = load_saved_credentials()
+    if username and password:
+        return username, password, storage or "saved"
+
+    if username and not password:
+        print(
+            "Saved OpenReview username found, but the password could not be "
+            "loaded. Run `ordl auth` to refresh credentials.",
+            file=sys.stderr,
+        )
+
+    if allow_prompt:
+        username, password = prompt_credentials()
+        if username and password:
+            return username, password, "prompt"
+
+    return None, None, "anonymous"
+
+
+def build_client(
+    credentials: Optional[Tuple[Optional[str], Optional[str], str]] = None,
+    *,
+    allow_prompt: bool = True,
+):
+    """Return an OpenReview client, optionally authenticated."""
     import openreview
 
-    username = os.environ.get("OPENREVIEW_USERNAME")
-    password = os.environ.get("OPENREVIEW_PASSWORD")
+    username, password, _source = credentials or resolve_credentials(
+        allow_prompt=allow_prompt
+    )
     return openreview.api.OpenReviewClient(
         baseurl="https://api2.openreview.net",
         username=username,
@@ -584,8 +747,124 @@ def status(message: str, args: argparse.Namespace) -> None:
     print(message, file=stream)
 
 
-def main() -> None:
-    args = parse_args()
+def parse_auth_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="ordl auth",
+        description="Save, inspect, or remove OpenReview credentials.",
+    )
+    parser.add_argument(
+        "action",
+        nargs="?",
+        choices=("login", "status", "logout"),
+        default="login",
+        help="Auth action to run (default: login).",
+    )
+    parser.add_argument(
+        "--username",
+        help="OpenReview account email. Prompted when omitted.",
+    )
+    parser.add_argument(
+        "--password-stdin",
+        action="store_true",
+        help="Read the OpenReview password from stdin instead of prompting.",
+    )
+    return parser.parse_args(argv)
+
+
+def read_password_for_auth(args: argparse.Namespace) -> str:
+    if args.password_stdin:
+        return sys.stdin.readline().rstrip("\n")
+    return getpass.getpass("OpenReview password: ", stream=sys.stderr)
+
+
+def auth_login(args: argparse.Namespace) -> None:
+    username = args.username
+    if not username:
+        username = prompt_input("OpenReview email: ")
+    password = read_password_for_auth(args)
+
+    if not username or not password:
+        raise SystemExit("OpenReview email and password are required.")
+
+    storage = save_credentials(username, password)
+    if storage == "keyring":
+        print("OpenReview credentials saved in the system keyring.")
+    else:
+        print(f"OpenReview credentials saved in {auth_config_path()}.")
+        print(
+            "Warning: no usable system keyring was available, so the password "
+            "was saved in a local config file."
+        )
+
+
+def auth_status() -> None:
+    env_username = os.environ.get("OPENREVIEW_USERNAME")
+    env_password = os.environ.get("OPENREVIEW_PASSWORD")
+    if env_username and env_password:
+        print("OpenReview credentials: environment")
+        print(f"Username: {env_username}")
+        return
+
+    username, password, storage = load_saved_credentials()
+    if username and password:
+        print(f"OpenReview credentials: {storage or 'saved'}")
+        print(f"Username: {username}")
+        return
+
+    if username:
+        print("OpenReview credentials: incomplete saved credentials")
+        print(f"Username: {username}")
+        print("Run `ordl auth` to refresh them.")
+        return
+
+    print("OpenReview credentials: not configured")
+    print("Run `ordl auth` to save credentials, or set environment variables.")
+
+
+def auth_logout() -> None:
+    removed = clear_saved_credentials()
+    if removed:
+        print("Saved OpenReview credentials removed.")
+    else:
+        print("No saved OpenReview credentials found.")
+
+
+def auth_main(argv: Optional[Sequence[str]] = None) -> None:
+    args = parse_auth_args(argv)
+    if args.action == "status":
+        auth_status()
+    elif args.action == "logout":
+        auth_logout()
+    else:
+        auth_login(args)
+
+
+def is_challenge_required(exc: Exception) -> bool:
+    return "ChallengeRequiredError" in str(exc)
+
+
+def challenge_message() -> str:
+    return (
+        "OpenReview requires authenticated or challenge-verified API access for "
+        "this request. Run `ordl auth` to save OpenReview credentials, or set "
+        "OPENREVIEW_USERNAME and OPENREVIEW_PASSWORD in the environment."
+    )
+
+
+def main(argv: Optional[Sequence[str]] = None) -> None:
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    if raw_argv and raw_argv[0] == "auth":
+        auth_main(raw_argv[1:])
+        return
+
+    original_argv = sys.argv
+    if argv is not None:
+        sys.argv = [original_argv[0], *raw_argv]
+    try:
+        args = parse_args()
+    finally:
+        if argv is not None:
+            sys.argv = original_argv
 
     client = build_client()
     base_dir = args.out_dir or conference_dir(args.venue_id)
@@ -594,7 +873,12 @@ def main() -> None:
 
     need_rejected = args.info or "rejected" in args.decisions
     status(f"Fetching accepted submissions for {args.venue_id}...", args)
-    accepted, rejected = fetch_notes(client, args.venue_id, need_rejected)
+    try:
+        accepted, rejected = fetch_notes(client, args.venue_id, need_rejected)
+    except Exception as exc:  # noqa: BLE001
+        if is_challenge_required(exc):
+            raise SystemExit(challenge_message()) from None
+        raise
     status(f"Accepted submissions: {len(accepted)}", args)
     if need_rejected:
         status(f"Rejected submissions: {len(rejected)}", args)
