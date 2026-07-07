@@ -53,6 +53,7 @@ class CliSelectionTests(unittest.TestCase):
             "head": None,
             "format": "text",
             "list": True,
+            "with_abstract": False,
         }
         defaults.update(overrides)
         return argparse.Namespace(**defaults)
