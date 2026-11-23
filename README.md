@@ -43,6 +43,12 @@ ordl auth logout
 
 When no environment or saved credentials are available, `ordl` asks for your OpenReview email and password interactively before contacting OpenReview.
 
+### Download rate limits
+
+OpenReview caps how many PDFs one account can download per hour (for example 140 per hour; some accounts get fewer). The progress bar shows the remaining quota, and when it runs out `ordl` says so and waits with a countdown until the quota resets, then continues. Large venues (thousands of papers) therefore take many hours.
+
+Use `--on-rate-limit exit` to stop instead of waiting. Re-running the same command later resumes, because PDFs that are already present are skipped.
+
 ### Latest ICML example (2026)
 
 OpenReview may require authenticated API access for ICML 2026. Run `ordl auth` once, or set `OPENREVIEW_USERNAME` and `OPENREVIEW_PASSWORD` in your environment.
@@ -296,6 +302,7 @@ You can use any other OpenReview venue ID in the same way.
 - **`--format text|jsonl`** – Output format for `--list`; `jsonl` is convenient for automation
 - **`--with-abstract`** – Include abstract and TLDR in `--list` output
 - **`--max-filename-words N`** – Maximum number of title words to keep in downloaded PDF filenames; extra words are dropped (default: `5`)
+- **`--on-rate-limit wait|exit`** – When the hourly PDF download quota is used up, wait for it to reset and continue (default) or exit so you can re-run later
 - **`ordl auth`** – Save OpenReview credentials for future runs
 - **`ordl auth status`** – Show whether credentials come from the environment, saved auth, or neither
 - **`ordl auth logout`** – Remove saved OpenReview credentials

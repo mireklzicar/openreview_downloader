@@ -438,6 +438,16 @@ def parse_args() -> argparse.Namespace:
             "extra words are dropped (default: 5)."
         ),
     )
+    parser.add_argument(
+        "--on-rate-limit",
+        choices=("wait", "exit"),
+        default="wait",
+        help=(
+            "What to do when OpenReview's hourly PDF download quota is used up: "
+            "wait for it to reset and continue (default), or exit so you can "
+            "re-run later (existing files are skipped)."
+        ),
+    )
     parser.set_defaults(skip_existing=True)
 
     args = parser.parse_args()
@@ -894,6 +904,253 @@ def challenge_message() -> str:
     )
 
 
+class RateLimited(Exception):
+    """OpenReview refused a request because the account's quota is used up."""
+
+    def __init__(self, wait_seconds: float, limit: Optional[int] = None):
+        super().__init__(f"rate limited for {wait_seconds:.0f}s")
+        self.wait_seconds = wait_seconds
+        self.limit = limit
+
+
+class ChallengeRequired(Exception):
+    """OpenReview demands authentication or a browser challenge."""
+
+
+class Quota:
+    """Last rate-limit state reported by OpenReview for PDF downloads."""
+
+    def __init__(self) -> None:
+        self.limit: Optional[int] = None
+        self.remaining: Optional[int] = None
+        self.window_seconds: Optional[int] = None
+
+    def update(self, headers) -> None:
+        limit = _header_int(headers, "ratelimit-limit", "x-ratelimit-limit")
+        remaining = _header_int(headers, "ratelimit-remaining", "x-ratelimit-remaining")
+        policy = headers.get("ratelimit-policy") or ""
+        match = re.search(r"w=(\d+)", policy)
+        if limit is not None:
+            self.limit = limit
+        if remaining is not None:
+            self.remaining = remaining
+        if match:
+            self.window_seconds = int(match.group(1))
+
+    def describe(self) -> Optional[str]:
+        if self.remaining is None or self.limit is None:
+            return None
+        return f"{self.remaining}/{self.limit} left"
+
+
+def _header_int(headers, *names: str) -> Optional[int]:
+    for name in names:
+        value = headers.get(name)
+        if value is None:
+            continue
+        try:
+            return int(str(value).split(",")[0].strip())
+        except ValueError:
+            continue
+    return None
+
+
+def format_duration(seconds: float) -> str:
+    seconds = max(0, int(round(seconds)))
+    hours, rest = divmod(seconds, 3600)
+    minutes, secs = divmod(rest, 60)
+    if hours:
+        return f"{hours}h {minutes:02d}m"
+    if minutes:
+        return f"{minutes}m {secs:02d}s"
+    return f"{secs}s"
+
+
+def rate_limit_wait_seconds(response, now: Optional[float] = None) -> float:
+    """Return how long OpenReview asks us to wait after a 429 response."""
+    import time
+    from datetime import datetime
+
+    now = time.time() if now is None else now
+    retry_after = response.headers.get("retry-after")
+    if retry_after:
+        try:
+            return max(0.0, float(retry_after))
+        except ValueError:
+            pass
+    try:
+        details = response.json().get("details") or {}
+    except ValueError:
+        details = {}
+    reset_time = details.get("resetTime")
+    if reset_time:
+        try:
+            reset = datetime.fromisoformat(str(reset_time).replace("Z", "+00:00"))
+            return max(0.0, reset.timestamp() - now)
+        except ValueError:
+            pass
+    reset_header = _header_int(response.headers, "ratelimit-reset")
+    if reset_header is not None:
+        return float(reset_header)
+    return 3600.0
+
+
+def build_pdf_session():
+    """HTTP session for PDF downloads that never sleeps silently on HTTP 429.
+
+    openreview-py's own session honours Retry-After on 429, which makes the CLI
+    look frozen for up to an hour once the per-account PDF quota is used up.
+    """
+    import requests
+    from requests.adapters import HTTPAdapter
+    from urllib3.util.retry import Retry
+
+    retry = Retry(
+        total=3,
+        backoff_factor=1,
+        status_forcelist=[500, 502, 503, 504],
+        allowed_methods=["GET"],
+        respect_retry_after_header=False,
+    )
+    session = requests.Session()
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    return session
+
+
+def fetch_pdf(client, session, note_id: str, quota: Quota) -> bytes:
+    """Download one PDF, raising RateLimited / ChallengeRequired as needed."""
+    response = session.get(
+        f"{client.baseurl}/attachment",
+        params={"name": "pdf", "id": note_id},
+        headers=client.headers,
+        timeout=(30, 300),
+    )
+    quota.update(response.headers)
+    if response.status_code == 429:
+        raise RateLimited(rate_limit_wait_seconds(response), quota.limit)
+    if response.status_code == 200:
+        return response.content
+    message = response.text[:500]
+    if response.status_code == 403 and "ChallengeRequiredError" in message:
+        raise ChallengeRequired(message)
+    raise RuntimeError(f"HTTP {response.status_code}: {message}")
+
+
+def wait_with_countdown(seconds: float, sleep=None) -> None:
+    import time
+    from datetime import datetime, timedelta
+
+    sleep = sleep or time.sleep
+    resume_at = (datetime.now() + timedelta(seconds=seconds)).strftime("%H:%M")
+    total = int(seconds) + 1
+    with tqdm(
+        total=total,
+        desc=f"Rate limited; resuming at {resume_at}",
+        unit="s",
+        leave=False,
+        bar_format="{desc} ({remaining} left)",
+    ) as countdown:
+        for _ in range(total):
+            sleep(1)
+            countdown.update(1)
+
+
+def download_papers(
+    client,
+    to_download,
+    *,
+    on_rate_limit: str = "wait",
+    session=None,
+    sleep=None,
+) -> int:
+    """Download selected papers; return the number saved this run."""
+    session = session or build_pdf_session()
+    quota = Quota()
+    saved = 0
+    warned_about_quota = False
+
+    progress = tqdm(to_download, desc="Downloading", unit="paper")
+    for note, _category, path, _match_info in progress:
+        pdf_meta = note.content.get("pdf", {})
+        pdf_field_value = pdf_meta.get("value") if isinstance(pdf_meta, dict) else None
+        if not pdf_field_value:
+            tqdm.write(f"Skipping {note.id}: no pdf field")
+            continue
+
+        while True:
+            try:
+                pdf_bytes = fetch_pdf(client, session, note.id, quota)
+                break
+            except RateLimited as exc:
+                limit_text = (
+                    f" ({exc.limit} PDFs per {format_duration(quota.window_seconds)})"
+                    if exc.limit and quota.window_seconds
+                    else ""
+                )
+                message = (
+                    f"OpenReview PDF download quota reached{limit_text}. "
+                    f"Saved {saved} papers this run."
+                )
+                if on_rate_limit == "exit":
+                    progress.close()
+                    raise SystemExit(
+                        f"{message} Quota resets in {format_duration(exc.wait_seconds)}; "
+                        "re-run the same command then to resume (existing files are "
+                        "skipped)."
+                    )
+                tqdm.write(
+                    f"{message} Waiting {format_duration(exc.wait_seconds)} for the "
+                    "quota to reset. Press Ctrl+C to stop; re-running resumes."
+                )
+                wait_with_countdown(exc.wait_seconds + 5, sleep=sleep)
+            except ChallengeRequired:
+                progress.close()
+                raise SystemExit(challenge_message()) from None
+            except Exception as exc:  # noqa: BLE001
+                tqdm.write(f"Failed to fetch {note.id}: {exc}")
+                pdf_bytes = None
+                break
+
+        if pdf_bytes is None:
+            continue
+
+        try:
+            tmp_path = path.with_suffix(path.suffix + ".part")
+            tmp_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path.write_bytes(pdf_bytes)
+            tmp_path.replace(path)
+            saved += 1
+        except Exception as exc:  # noqa: BLE001
+            tqdm.write(f"Failed to save {path}: {exc}")
+            continue
+
+        quota_text = quota.describe()
+        if quota_text:
+            progress.set_postfix_str(f"quota {quota_text}", refresh=False)
+        if (
+            not warned_about_quota
+            and quota.limit
+            and quota.remaining is not None
+            and quota.window_seconds
+        ):
+            warned_about_quota = True
+            pending = len(to_download) - progress.n - 1
+            if pending > quota.remaining:
+                windows = (pending - quota.remaining) / quota.limit
+                tqdm.write(
+                    f"Note: OpenReview allows {quota.limit} PDF downloads per "
+                    f"{format_duration(quota.window_seconds)} for this account. "
+                    f"{pending} papers remain, so this run will pause for the quota "
+                    f"to reset and take roughly "
+                    f"{format_duration(windows * quota.window_seconds)} or more."
+                )
+
+    progress.close()
+    return saved
+
+
 def main(argv: Optional[Sequence[str]] = None) -> None:
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     if raw_argv and raw_argv[0] == "auth":
@@ -963,29 +1220,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         print(f"Head limit: first {len(selected_for_action)} selected papers")
     print(f"Already present: {already_present}. To download now: {len(to_download)}")
 
-    for note, category, path, _match_info in tqdm(
-        to_download, desc="Downloading", unit="paper"
-    ):
-        pdf_meta = note.content.get("pdf", {})
-        pdf_field_value = pdf_meta.get("value") if isinstance(pdf_meta, dict) else None
-        if not pdf_field_value:
-            tqdm.write(f"Skipping {note.id}: no pdf field")
-            continue
-
-        try:
-            pdf_bytes = client.get_attachment(field_name="pdf", id=note.id)
-        except Exception as exc:  # noqa: BLE001
-            tqdm.write(f"Failed to fetch {note.id}: {exc}")
-            continue
-
-        try:
-            tmp_path = path.with_suffix(path.suffix + ".part")
-            tmp_path.parent.mkdir(parents=True, exist_ok=True)
-            tmp_path.write_bytes(pdf_bytes)
-            tmp_path.replace(path)
-        except Exception as exc:  # noqa: BLE001
-            tqdm.write(f"Failed to save {path}: {exc}")
-            continue
+    download_papers(client, to_download, on_rate_limit=args.on_rate_limit)
 
     print(f"Done. Files saved under {base_dir}/<decision>/")
 
