@@ -49,51 +49,52 @@ OpenReview caps how many PDFs one account can download per hour (for example 140
 
 Use `--on-rate-limit exit` to stop instead of waiting. Re-running the same command later resumes, because PDFs that are already present are skipped.
 
-### Latest ICML example (2026)
+### Latest NeurIPS example (2026)
 
-OpenReview may require authenticated API access for ICML 2026. Run `ordl auth` once, or set `OPENREVIEW_USERNAME` and `OPENREVIEW_PASSWORD` in your environment.
+OpenReview requires authenticated API access for NeurIPS 2026. Run `ordl auth` once, or set `OPENREVIEW_USERNAME` and `OPENREVIEW_PASSWORD` in your environment.
 
-Download all ICML 2026 spotlight papers:
+Download all NeurIPS 2026 spotlight papers:
 
 ```bash
-ordl spotlight --venue-id ICML.cc/2026/Conference
+ordl spotlight --venue-id NeurIPS.cc/2026/Conference
 ```
 
 Download Output:
 
 ```
 downloads
-└── icml2026
+└── neurips2026
     └── spotlight
-        ├── 34584_Foundations_of_Equivariant_Deep_Learning.pdf
+        ├── 35674_Non-asymptotic_implicit_bias_of_logistic.pdf
+        ├── 35764_Foundations_of_Categorical_Equivariant_Deep.pdf
         ...
-        └── 34218_Information-Theoretic_Disentangled_Latent_Modeling_with.pdf
+        └── 36392_KoalaGS_Complexity-Aware_Continuous_Level_of.pdf
 ```
 
 See decision counts without downloading:
 
 ```bash
-ordl --info --venue-id ICML.cc/2026/Conference
+ordl --info --venue-id NeurIPS.cc/2026/Conference
 ```
 
 Example output:
 
 ```
-Fetching accepted submissions for ICML.cc/2026/Conference...
-Accepted submissions: 6341
-Rejected submissions: 214
-ICML 2026
+Fetching accepted submissions for NeurIPS.cc/2026/Conference...
+Accepted submissions: 7896
+Rejected submissions: 298
+NeurIPS 2026
 ---
-Oral: 0
-Spotlight: 536
-Accepted: 6341
-Rejected: 214
+Oral: 113
+Spotlight: 291
+Accepted: 7896
+Rejected: 298
 ```
 
-Preview accepted ICML 2026 papers:
+Preview NeurIPS 2026 orals:
 
 ```bash
-ordl accepted --list --head 3 --venue-id ICML.cc/2026/Conference
+ordl oral --list --head 3 --venue-id NeurIPS.cc/2026/Conference
 ```
 
 ### Basic examples (NeurIPS)
@@ -276,6 +277,12 @@ ordl oral --venue-id ICLR.cc/2025/Conference
 
 ```bash
 ordl accepted --venue-id ICLR.cc/2025/Conference
+```
+
+**ICML 2026 spotlights:**
+
+```bash
+ordl spotlight --venue-id ICML.cc/2026/Conference
 ```
 
 **ICML 2025 oral + spotlight:**
