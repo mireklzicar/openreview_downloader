@@ -781,13 +781,16 @@ def collect_selected(
     return selected
 
 
-def print_info(venue_id: str, counts: Dict[str, int]) -> None:
+def venue_label(venue_id: str) -> str:
+    """Readable venue name, e.g. NeurIPS.cc/2026/Conference -> NeurIPS 2026."""
     parts = venue_id.split("/")
     short_name = parts[0].split(".")[0] if parts else venue_id
     year = next((p for p in parts if p.isdigit()), "")
-    heading = " ".join(part for part in (short_name, year) if part)
+    return " ".join(part for part in (short_name, year) if part) or venue_id
 
-    print(heading or venue_id)
+
+def print_info(venue_id: str, counts: Dict[str, int]) -> None:
+    print(venue_label(venue_id))
     print("---")
     print(f"Oral: {counts['oral']}")
     print(f"Spotlight: {counts['spotlight']}")
@@ -798,6 +801,62 @@ def print_info(venue_id: str, counts: Dict[str, int]) -> None:
 def status(message: str, args: argparse.Namespace) -> None:
     stream = sys.stderr if args.list and args.format == "jsonl" else sys.stdout
     print(message, file=stream)
+
+
+def use_color(stream=None) -> bool:
+    stream = stream or sys.stdout
+    isatty = getattr(stream, "isatty", None)
+    return bool(isatty and isatty()) and not os.environ.get("NO_COLOR")
+
+
+def transient_status(message: str) -> None:
+    """Show a status line that the next output overwrites (on a terminal)."""
+    if use_color():
+        print(f"\033[2m{message}\033[0m", end="\r", flush=True)
+    else:
+        print(message)
+
+
+def clear_transient_status() -> None:
+    if use_color():
+        print("\r\033[K", end="", flush=True)
+
+
+def decisions_phrase(decisions: Sequence[str]) -> str:
+    names = list(decisions)
+    if not names:
+        return ""
+    joined = names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
+    if all(name in ("oral", "spotlight") for name in names):
+        joined = f"accepted {joined}"
+    return joined
+
+
+def download_heading(
+    count: int, decisions: Sequence[str], venue_id: str, already_present: int = 0
+) -> str:
+    noun = "submission" if count == 1 else "submissions"
+    heading = (
+        f"Downloading {count} {decisions_phrase(decisions)} {noun} "
+        f"from {venue_label(venue_id)}"
+    )
+    if already_present:
+        heading += f" ({already_present} already downloaded)"
+    return heading
+
+
+def paper_line(category: str, path: Path, color: bool = False, width: int = 0) -> str:
+    """One output line per saved PDF: `[oral] 12345_Title_Words.pdf`."""
+    tag = f"[{category}]"
+    name = path.name
+    available = width - len(tag) - 1 if width else 0
+    if available and len(name) > available:
+        suffix = path.suffix
+        keep = max(1, available - len(suffix) - 1)
+        name = f"{name[:keep]}\u2026{suffix}"
+    if color:
+        tag = f"\033[36m{tag}\033[0m"
+    return f"{tag} {name}"
 
 
 def parse_auth_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
@@ -937,11 +996,6 @@ class Quota:
         if match:
             self.window_seconds = int(match.group(1))
 
-    def describe(self) -> Optional[str]:
-        if self.remaining is None or self.limit is None:
-            return None
-        return f"{self.remaining}/{self.limit} left"
-
 
 def _header_int(headers, *names: str) -> Optional[int]:
     for name in names:
@@ -1057,6 +1111,26 @@ def wait_with_countdown(seconds: float, sleep=None) -> None:
             countdown.update(1)
 
 
+class DownloadProgress(tqdm):
+    """Minimal bar: a filled segment over a dim track, then count and ETA."""
+
+    bar_width = 30
+    use_color = False
+
+    @property
+    def format_dict(self):
+        info = super().format_dict
+        total = info.get("total") or 0
+        filled = int(round(self.bar_width * info["n"] / total)) if total else 0
+        done = "\u2501" * filled
+        rest = "\u2500" * (self.bar_width - filled)
+        if self.use_color:
+            info["progress_bar"] = f"\033[32m{done}\033[90m{rest}\033[0m"
+        else:
+            info["progress_bar"] = done + rest
+        return info
+
+
 def download_papers(
     client,
     to_download,
@@ -1071,8 +1145,17 @@ def download_papers(
     saved = 0
     warned_about_quota = False
 
-    progress = tqdm(to_download, desc="Downloading", unit="paper")
-    for note, _category, path, _match_info in progress:
+    import shutil
+
+    color = use_color()
+    width = shutil.get_terminal_size().columns if color else 0
+    progress = DownloadProgress(
+        to_download,
+        unit="paper",
+        bar_format="{progress_bar} {n_fmt}/{total_fmt} \u00b7 ETA {remaining}",
+    )
+    progress.use_color = use_color(sys.stderr)
+    for note, category, path, _match_info in progress:
         pdf_meta = note.content.get("pdf", {})
         pdf_field_value = pdf_meta.get("value") if isinstance(pdf_meta, dict) else None
         if not pdf_field_value:
@@ -1126,9 +1209,7 @@ def download_papers(
             tqdm.write(f"Failed to save {path}: {exc}")
             continue
 
-        quota_text = quota.describe()
-        if quota_text:
-            progress.set_postfix_str(f"quota {quota_text}", refresh=False)
+        tqdm.write(paper_line(category, path, color=color, width=width))
         if (
             not warned_about_quota
             and quota.limit
@@ -1171,17 +1252,25 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     if not args.info and not args.list:
         base_dir.mkdir(parents=True, exist_ok=True)
 
+    downloading = not args.info and not args.list
     need_rejected = args.info or "rejected" in args.decisions
-    status(f"Fetching accepted submissions for {args.venue_id}...", args)
+    if downloading:
+        transient_status(f"Fetching submissions for {args.venue_id}...")
+    else:
+        status(f"Fetching accepted submissions for {args.venue_id}...", args)
     try:
         accepted, rejected = fetch_notes(client, args.venue_id, need_rejected)
     except Exception as exc:  # noqa: BLE001
         if is_challenge_required(exc):
             raise SystemExit(challenge_message()) from None
         raise
-    status(f"Accepted submissions: {len(accepted)}", args)
-    if need_rejected:
-        status(f"Rejected submissions: {len(rejected)}", args)
+    finally:
+        if downloading:
+            clear_transient_status()
+    if not downloading:
+        status(f"Accepted submissions: {len(accepted)}", args)
+        if need_rejected:
+            status(f"Rejected submissions: {len(rejected)}", args)
 
     counts = decision_counts(accepted, rejected, args.venue_id)
     if args.info:
@@ -1208,7 +1297,6 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         selected_for_action,
         args.skip_existing,
     )
-    print(f"Requested decisions: {', '.join(args.decisions)}")
     if has_search_filters(args):
         total_hits = sum(
             match_info["hit_count"]
@@ -1216,13 +1304,21 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             if match_info
         )
         print(f"Matched papers: {total_matches}. Text hits selected: {total_hits}")
-    if args.head is not None:
-        print(f"Head limit: first {len(selected_for_action)} selected papers")
-    print(f"Already present: {already_present}. To download now: {len(to_download)}")
+    if not to_download:
+        print(
+            f"Nothing to download: all {already_present} selected papers are "
+            f"already in {base_dir}/"
+        )
+        return
 
-    download_papers(client, to_download, on_rate_limit=args.on_rate_limit)
-
-    print(f"Done. Files saved under {base_dir}/<decision>/")
+    color = use_color()
+    heading = download_heading(
+        len(to_download), args.decisions, args.venue_id, already_present
+    )
+    print(f"\033[1m{heading}\033[0m" if color else heading)
+    saved = download_papers(client, to_download, on_rate_limit=args.on_rate_limit)
+    summary = f"Saved {saved} PDF{'' if saved == 1 else 's'} to {base_dir}/"
+    print(f"\033[32m\u2713\033[0m {summary}" if color else summary)
 
 
 if __name__ == "__main__":

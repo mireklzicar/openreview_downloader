@@ -14,7 +14,9 @@ from openreview_downloader.cli import (
     clear_saved_credentials,
     collect_selected,
     compile_regexes,
+    download_heading,
     download_papers,
+    paper_line,
     rate_limit_wait_seconds,
     filter_selected,
     load_saved_credentials,
@@ -311,6 +313,20 @@ class DownloadTests(unittest.TestCase):
         self.assertIn("ordl auth", str(ctx.exception.code))
         self.assertEqual(session.requested_ids, ["a"])
 
+    def test_prints_one_line_per_saved_pdf(self):
+        session = FakeSession(
+            [
+                FakeResponse(200, b"%PDF-1", headers=QUOTA_HEADERS),
+                FakeResponse(200, b"%PDF-2", headers=QUOTA_HEADERS),
+            ]
+        )
+        output = io.StringIO()
+        with redirect_stdout(output), patch("sys.stderr", io.StringIO()):
+            download_papers(
+                self.client, [self.item("a"), self.item("b")], session=session
+            )
+        self.assertEqual(output.getvalue().splitlines(), ["[accepted] a.pdf", "[accepted] b.pdf"])
+
     def test_wait_seconds_falls_back_to_reset_time(self):
         response = FakeResponse(
             429, body={"details": {"resetTime": "2026-08-31T08:59:25.212Z"}}
@@ -319,6 +335,29 @@ class DownloadTests(unittest.TestCase):
 
         now = datetime(2026, 8, 31, 7, 59, 25, tzinfo=timezone.utc).timestamp()
         self.assertAlmostEqual(rate_limit_wait_seconds(response, now=now), 3600.212, 2)
+
+
+
+class OutputFormatTests(unittest.TestCase):
+    def test_download_heading(self):
+        self.assertEqual(
+            download_heading(5, ["oral"], "NeurIPS.cc/2026/Conference"),
+            "Downloading 5 accepted oral submissions from NeurIPS 2026",
+        )
+        self.assertEqual(
+            download_heading(1, ["accepted", "rejected"], "ICLR.cc/2026/Conference", 3),
+            "Downloading 1 accepted and rejected submission from ICLR 2026 "
+            "(3 already downloaded)",
+        )
+
+    def test_paper_line_truncates_to_terminal_width(self):
+        path = Path("downloads/neurips2026/oral/35260_PhaseLoRA_Control-Regime.pdf")
+        self.assertEqual(
+            paper_line("oral", path), "[oral] 35260_PhaseLoRA_Control-Regime.pdf"
+        )
+        line = paper_line("oral", path, width=30)
+        self.assertEqual(len(line), 30)
+        self.assertTrue(line.endswith("\u2026.pdf"))
 
 
 if __name__ == "__main__":
