@@ -43,51 +43,58 @@ ordl auth logout
 
 When no environment or saved credentials are available, `ordl` asks for your OpenReview email and password interactively before contacting OpenReview.
 
-### Latest ICML example (2026)
+### Download rate limits
 
-OpenReview may require authenticated API access for ICML 2026. Run `ordl auth` once, or set `OPENREVIEW_USERNAME` and `OPENREVIEW_PASSWORD` in your environment.
+OpenReview caps how many PDFs one account can download per hour (for example 140 per hour; some accounts get fewer). The progress bar shows the remaining quota, and when it runs out `ordl` says so and waits with a countdown until the quota resets, then continues. Large venues (thousands of papers) therefore take many hours.
 
-Download all ICML 2026 spotlight papers:
+Use `--on-rate-limit exit` to stop instead of waiting. Re-running the same command later resumes, because PDFs that are already present are skipped.
+
+### Latest NeurIPS example (2026)
+
+OpenReview requires authenticated API access for NeurIPS 2026. Run `ordl auth` once, or set `OPENREVIEW_USERNAME` and `OPENREVIEW_PASSWORD` in your environment.
+
+Download all NeurIPS 2026 spotlight papers:
 
 ```bash
-ordl spotlight --venue-id ICML.cc/2026/Conference
+ordl spotlight --venue-id NeurIPS.cc/2026/Conference
 ```
 
 Download Output:
 
 ```
 downloads
-└── icml2026
+└── neurips2026
     └── spotlight
-        ├── 34584_Foundations_of_Equivariant_Deep_Learning.pdf
+        ├── 35674_Non-asymptotic_implicit_bias_of_logistic.pdf
+        ├── 35764_Foundations_of_Categorical_Equivariant_Deep.pdf
         ...
-        └── 34218_Information-Theoretic_Disentangled_Latent_Modeling_with.pdf
+        └── 36392_KoalaGS_Complexity-Aware_Continuous_Level_of.pdf
 ```
 
 See decision counts without downloading:
 
 ```bash
-ordl --info --venue-id ICML.cc/2026/Conference
+ordl --info --venue-id NeurIPS.cc/2026/Conference
 ```
 
 Example output:
 
 ```
-Fetching accepted submissions for ICML.cc/2026/Conference...
-Accepted submissions: 6341
-Rejected submissions: 214
-ICML 2026
+Fetching accepted submissions for NeurIPS.cc/2026/Conference...
+Accepted submissions: 7896
+Rejected submissions: 298
+NeurIPS 2026
 ---
-Oral: 0
-Spotlight: 536
-Accepted: 6341
-Rejected: 214
+Oral: 113
+Spotlight: 291
+Accepted: 7896
+Rejected: 298
 ```
 
-Preview accepted ICML 2026 papers:
+Preview NeurIPS 2026 orals:
 
 ```bash
-ordl accepted --list --head 3 --venue-id ICML.cc/2026/Conference
+ordl oral --list --head 3 --venue-id NeurIPS.cc/2026/Conference
 ```
 
 ### Basic examples (NeurIPS)
@@ -272,6 +279,12 @@ ordl oral --venue-id ICLR.cc/2025/Conference
 ordl accepted --venue-id ICLR.cc/2025/Conference
 ```
 
+**ICML 2026 spotlights:**
+
+```bash
+ordl spotlight --venue-id ICML.cc/2026/Conference
+```
+
 **ICML 2025 oral + spotlight:**
 
 ```bash
@@ -296,6 +309,7 @@ You can use any other OpenReview venue ID in the same way.
 - **`--format text|jsonl`** – Output format for `--list`; `jsonl` is convenient for automation
 - **`--with-abstract`** – Include abstract and TLDR in `--list` output
 - **`--max-filename-words N`** – Maximum number of title words to keep in downloaded PDF filenames; extra words are dropped (default: `5`)
+- **`--on-rate-limit wait|exit`** – When the hourly PDF download quota is used up, wait for it to reset and continue (default) or exit so you can re-run later
 - **`ordl auth`** – Save OpenReview credentials for future runs
 - **`ordl auth status`** – Show whether credentials come from the environment, saved auth, or neither
 - **`ordl auth logout`** – Remove saved OpenReview credentials

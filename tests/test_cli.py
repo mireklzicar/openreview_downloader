@@ -14,6 +14,8 @@ from openreview_downloader.cli import (
     clear_saved_credentials,
     collect_selected,
     compile_regexes,
+    download_papers,
+    rate_limit_wait_seconds,
     filter_selected,
     load_saved_credentials,
     parse_decisions,
@@ -218,6 +220,105 @@ class CliAuthTests(unittest.TestCase):
         text = output.getvalue()
         self.assertIn("OpenReview credentials: file", text)
         self.assertIn("Username: saved@example.com", text)
+
+
+class FakeResponse:
+    def __init__(self, status_code, content=b"", headers=None, body=None):
+        self.status_code = status_code
+        self.content = content
+        self.headers = headers or {}
+        self._body = body
+        self.text = json.dumps(body) if body is not None else content.decode("latin-1")
+
+    def json(self):
+        if self._body is None:
+            raise ValueError("no json")
+        return self._body
+
+
+class FakeSession:
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.requested_ids = []
+
+    def get(self, url, params=None, headers=None, timeout=None):
+        self.requested_ids.append(params["id"])
+        return self.responses.pop(0)
+
+
+QUOTA_HEADERS = {
+    "ratelimit-limit": "2",
+    "ratelimit-remaining": "1",
+    "ratelimit-policy": "2;w=3600",
+}
+
+
+class DownloadTests(unittest.TestCase):
+    def setUp(self):
+        self.client = SimpleNamespace(baseurl="https://api.example", headers={})
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def item(self, note_id):
+        note = SimpleNamespace(id=note_id, content={"pdf": {"value": "/pdf"}})
+        return (note, "accepted", Path(self.tmp.name) / f"{note_id}.pdf", None)
+
+    def rate_limited(self):
+        return FakeResponse(
+            429,
+            headers={"retry-after": "3", **QUOTA_HEADERS, "ratelimit-remaining": "0"},
+            body={"name": "RateLimitError", "status": 429},
+        )
+
+    def test_waits_for_quota_reset_and_retries_same_paper(self):
+        session = FakeSession(
+            [
+                FakeResponse(200, b"%PDF-1", headers=QUOTA_HEADERS),
+                self.rate_limited(),
+                FakeResponse(200, b"%PDF-2", headers=QUOTA_HEADERS),
+            ]
+        )
+        sleeps = []
+        items = [self.item("a"), self.item("b")]
+        with redirect_stdout(io.StringIO()), patch("sys.stderr", io.StringIO()):
+            saved = download_papers(
+                self.client, items, session=session, sleep=sleeps.append
+            )
+
+        self.assertEqual(saved, 2)
+        self.assertEqual(session.requested_ids, ["a", "b", "b"])
+        self.assertEqual(len(sleeps), 3 + 5 + 1)
+        self.assertEqual(items[1][2].read_bytes(), b"%PDF-2")
+
+    def test_exit_mode_stops_with_resume_hint(self):
+        session = FakeSession([self.rate_limited()])
+        with patch("sys.stderr", io.StringIO()):
+            with self.assertRaises(SystemExit) as ctx:
+                download_papers(
+                    self.client, [self.item("a")], session=session, on_rate_limit="exit"
+                )
+        self.assertIn("re-run the same command", str(ctx.exception.code))
+
+    def test_challenge_error_aborts_instead_of_failing_every_paper(self):
+        session = FakeSession(
+            [FakeResponse(403, body={"name": "ChallengeRequiredError", "status": 403})]
+        )
+        with patch("sys.stderr", io.StringIO()):
+            with self.assertRaises(SystemExit) as ctx:
+                download_papers(
+                    self.client, [self.item("a"), self.item("b")], session=session
+                )
+        self.assertIn("ordl auth", str(ctx.exception.code))
+        self.assertEqual(session.requested_ids, ["a"])
+
+    def test_wait_seconds_falls_back_to_reset_time(self):
+        response = FakeResponse(
+            429, body={"details": {"resetTime": "2026-08-31T08:59:25.212Z"}}
+        )
+        from datetime import datetime, timezone
+
+        now = datetime(2026, 8, 31, 7, 59, 25, tzinfo=timezone.utc).timestamp()
+        self.assertAlmostEqual(rate_limit_wait_seconds(response, now=now), 3600.212, 2)
 
 
 if __name__ == "__main__":
