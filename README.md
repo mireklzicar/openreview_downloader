@@ -45,7 +45,7 @@ When no environment or saved credentials are available, `ordl` asks for your Ope
 
 ### Download rate limits
 
-OpenReview caps how many PDFs one account can download per hour (for example 140 per hour; some accounts get fewer). The progress bar shows the remaining quota, and when it runs out `ordl` says so and waits with a countdown until the quota resets, then continues. Large venues (thousands of papers) therefore take many hours.
+OpenReview caps how many PDFs one account can download per hour (for example 140 per hour; some accounts get fewer). When the quota runs out, `ordl` says so and waits with a countdown until the quota resets, then continues. Large venues (thousands of papers) therefore take many hours.
 
 Use `--on-rate-limit exit` to stop instead of waiting. Re-running the same command later resumes, because PDFs that are already present are skipped.
 
